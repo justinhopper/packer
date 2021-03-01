@@ -1,0 +1,45 @@
+diff --git a/builder/azure/arm/builder.go b/builder/azure/arm/builder.go
+index e35ee2c3f..7f36662b0 100644
+--- a/builder/azure/arm/builder.go
++++ b/builder/azure/arm/builder.go
+@@ -10,6 +10,7 @@ import (
+ 	"strings"
+ 	"time"
+ 
++	newCompute "github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2019-03-01/compute"
+ 	armstorage "github.com/Azure/azure-sdk-for-go/services/storage/mgmt/2017-10-01/storage"
+ 	"github.com/Azure/azure-sdk-for-go/storage"
+ 	"github.com/Azure/go-autorest/autorest/adal"
+@@ -174,11 +175,28 @@ func (b *Builder) Run(ctx context.Context, ui packersdk.Ui, hook packersdk.Hook)
+ 
+ 	deploymentName := b.stateBag.Get(constants.ArmDeploymentName).(string)
+ 
+-	// For Managed Images, validate that Shared Gallery Image exists before publishing to SIG
++	specialSwitchCreateImageDefinition := true
++	// For Managed Images, check that Shared Gallery Image exists or create before publishing to SIG
+ 	if b.config.isManagedImage() && b.config.SharedGalleryDestination.SigDestinationGalleryName != "" {
+-		_, err = azureClient.GalleryImagesClient.Get(ctx, b.config.SharedGalleryDestination.SigDestinationResourceGroup, b.config.SharedGalleryDestination.SigDestinationGalleryName, b.config.SharedGalleryDestination.SigDestinationImageName)
+-		if err != nil {
+-			return nil, fmt.Errorf("the Shared Gallery Image to which to publish the managed image version to does not exist in the resource group %s", b.config.SharedGalleryDestination.SigDestinationResourceGroup)
++		_, err := azureClient.GalleryImagesClient.Get(ctx, b.config.SharedGalleryDestination.SigDestinationResourceGroup, b.config.SharedGalleryDestination.SigDestinationGalleryName, b.config.SharedGalleryDestination.SigDestinationImageName)
++		if err != nil { // NEED TO CHECK IF 404 ERROR OR OTHER TYPE
++			if specialSwitchCreateImageDefinition != true {
++				return nil, fmt.Errorf("the Shared Gallery Image to which to publish the managed image version to does not exist in the resource group %s", b.config.SharedGalleryDestination.SigDestinationResourceGroup)
++			}
++			props := newCompute.GalleryImageProperties{
++				OsType:  newCompute.OperatingSystemTypes("Linux"),
++				OsState: newCompute.OperatingSystemStateTypes("Generalized"),
++			}
++			location := normalizeAzureRegion(b.stateBag.Get(constants.ArmLocation).(string))
++			image := newCompute.GalleryImage{
++				GalleryImageProperties: &props,
++				Name:                   &b.config.SharedGalleryDestination.SigDestinationImageName,
++				Location:               &location,
++			}
++			_, err = azureClient.GalleryImagesClient.CreateOrUpdate(ctx, b.config.SharedGalleryDestination.SigDestinationResourceGroup, b.config.SharedGalleryDestination.SigDestinationGalleryName, b.config.SharedGalleryDestination.SigDestinationImageName, image)
++			if err != nil {
++				return nil, fmt.Errorf("failed to create shared gallery image in the resource group %s: %v", b.config.SharedGalleryDestination.SigDestinationResourceGroup, err)
++			}
+ 		}
+ 		// SIG requires that replication regions include the region in which the Managed Image resides
+ 		managedImageLocation := normalizeAzureRegion(b.stateBag.Get(constants.ArmLocation).(string))

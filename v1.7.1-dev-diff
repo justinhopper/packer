@@ -1,5 +1,5 @@
 diff --git a/builder/azure/arm/builder.go b/builder/azure/arm/builder.go
-index e35ee2c3f..7f36662b0 100644
+index e35ee2c3f..a807a55b5 100644
 --- a/builder/azure/arm/builder.go
 +++ b/builder/azure/arm/builder.go
 @@ -10,6 +10,7 @@ import (
@@ -10,12 +10,29 @@ index e35ee2c3f..7f36662b0 100644
  	armstorage "github.com/Azure/azure-sdk-for-go/services/storage/mgmt/2017-10-01/storage"
  	"github.com/Azure/azure-sdk-for-go/storage"
  	"github.com/Azure/go-autorest/autorest/adal"
-@@ -174,11 +175,28 @@ func (b *Builder) Run(ctx context.Context, ui packersdk.Ui, hook packersdk.Hook)
+@@ -117,7 +118,7 @@ func (b *Builder) Run(ctx context.Context, ui packersdk.Ui, hook packersdk.Hook)
+ 			return nil, fmt.Errorf("Cannot locate the managed image resource group %s.", b.config.ManagedImageResourceGroupName)
+ 		}
+ 
+-		// If a managed image already exists it cannot be overwritten.
++		// If a managed image already exists, it cannot be overwritten unless forced
+ 		_, err = azureClient.ImagesClient.Get(ctx, b.config.ManagedImageResourceGroupName, b.config.ManagedImageName, "")
+ 		if err == nil {
+ 			if b.config.PackerForce {
+@@ -141,7 +142,7 @@ func (b *Builder) Run(ctx context.Context, ui packersdk.Ui, hook packersdk.Hook)
+ 	if b.config.BuildResourceGroupName != "" {
+ 		group, err := azureClient.GroupsClient.Get(ctx, b.config.BuildResourceGroupName)
+ 		if err != nil {
+-			return nil, fmt.Errorf("Cannot locate the existing build resource resource group %s.", b.config.BuildResourceGroupName)
++			return nil, fmt.Errorf("Cannot locate the existing build resource group %s.", b.config.BuildResourceGroupName)
+ 		}
+ 
+ 		b.config.Location = *group.Location
+@@ -174,11 +175,39 @@ func (b *Builder) Run(ctx context.Context, ui packersdk.Ui, hook packersdk.Hook)
  
  	deploymentName := b.stateBag.Get(constants.ArmDeploymentName).(string)
  
 -	// For Managed Images, validate that Shared Gallery Image exists before publishing to SIG
-+	specialSwitchCreateImageDefinition := true
 +	// For Managed Images, check that Shared Gallery Image exists or create before publishing to SIG
  	if b.config.isManagedImage() && b.config.SharedGalleryDestination.SigDestinationGalleryName != "" {
 -		_, err = azureClient.GalleryImagesClient.Get(ctx, b.config.SharedGalleryDestination.SigDestinationResourceGroup, b.config.SharedGalleryDestination.SigDestinationGalleryName, b.config.SharedGalleryDestination.SigDestinationImageName)
@@ -23,19 +40,31 @@ index e35ee2c3f..7f36662b0 100644
 -			return nil, fmt.Errorf("the Shared Gallery Image to which to publish the managed image version to does not exist in the resource group %s", b.config.SharedGalleryDestination.SigDestinationResourceGroup)
 +		_, err := azureClient.GalleryImagesClient.Get(ctx, b.config.SharedGalleryDestination.SigDestinationResourceGroup, b.config.SharedGalleryDestination.SigDestinationGalleryName, b.config.SharedGalleryDestination.SigDestinationImageName)
 +		if err != nil { // NEED TO CHECK IF 404 ERROR OR OTHER TYPE
-+			if specialSwitchCreateImageDefinition != true {
++			if b.config.SharedGalleryDestination.SigDestinationImagePublisher == "" {
 +				return nil, fmt.Errorf("the Shared Gallery Image to which to publish the managed image version to does not exist in the resource group %s", b.config.SharedGalleryDestination.SigDestinationResourceGroup)
-+			}
-+			props := newCompute.GalleryImageProperties{
-+				OsType:  newCompute.OperatingSystemTypes("Linux"),
-+				OsState: newCompute.OperatingSystemStateTypes("Generalized"),
 +			}
 +			location := normalizeAzureRegion(b.stateBag.Get(constants.ArmLocation).(string))
 +			image := newCompute.GalleryImage{
-+				GalleryImageProperties: &props,
-+				Name:                   &b.config.SharedGalleryDestination.SigDestinationImageName,
-+				Location:               &location,
++				GalleryImageProperties: &newCompute.GalleryImageProperties{
++					OsType:  newCompute.OperatingSystemTypes(b.config.OSType),
++					OsState: newCompute.OperatingSystemStateTypes("Generalized"),
++					Identifier: &newCompute.GalleryImageIdentifier{
++						Publisher: &b.config.SharedGalleryDestination.SigDestinationImagePublisher,
++						Offer:     &b.config.SharedGalleryDestination.SigDestinationImageOffer,
++						Sku:       &b.config.SharedGalleryDestination.SigDestinationImageSku,
++					},
++				},
++				Name:     &b.config.SharedGalleryDestination.SigDestinationImageName,
++				Location: &location,
 +			}
++			ui.Say("Creating shared gallery image ...")
++			ui.Say(fmt.Sprintf(" -> ResourceGroupName   : '%s'", b.config.SharedGalleryDestination.SigDestinationResourceGroup))
++			ui.Say(fmt.Sprintf(" -> Location            : '%s'", location))
++			ui.Say(fmt.Sprintf(" -> Shared Image Gallery: '%s'", b.config.SharedGalleryDestination.SigDestinationGalleryName))
++			ui.Say(fmt.Sprintf(" -> Shared Gallery Image: '%s'", b.config.SharedGalleryDestination.SigDestinationImageName))
++			ui.Say(fmt.Sprintf(" -> Image Publisher: '%s'", b.config.SharedGalleryDestination.SigDestinationImagePublisher))
++			ui.Say(fmt.Sprintf(" -> Image Offer: '%s'", b.config.SharedGalleryDestination.SigDestinationImageOffer))
++			ui.Say(fmt.Sprintf(" -> Image Sku: '%s'", b.config.SharedGalleryDestination.SigDestinationImageSku))
 +			_, err = azureClient.GalleryImagesClient.CreateOrUpdate(ctx, b.config.SharedGalleryDestination.SigDestinationResourceGroup, b.config.SharedGalleryDestination.SigDestinationGalleryName, b.config.SharedGalleryDestination.SigDestinationImageName, image)
 +			if err != nil {
 +				return nil, fmt.Errorf("failed to create shared gallery image in the resource group %s: %v", b.config.SharedGalleryDestination.SigDestinationResourceGroup, err)
@@ -43,3 +72,73 @@ index e35ee2c3f..7f36662b0 100644
  		}
  		// SIG requires that replication regions include the region in which the Managed Image resides
  		managedImageLocation := normalizeAzureRegion(b.stateBag.Get(constants.ArmLocation).(string))
+diff --git a/builder/azure/arm/config.go b/builder/azure/arm/config.go
+index 0e7382be9..715befc9d 100644
+--- a/builder/azure/arm/config.go
++++ b/builder/azure/arm/config.go
+@@ -95,6 +95,10 @@ type SharedImageGalleryDestination struct {
+ 	SigDestinationImageName          string   `mapstructure:"image_name"`
+ 	SigDestinationImageVersion       string   `mapstructure:"image_version"`
+ 	SigDestinationReplicationRegions []string `mapstructure:"replication_regions"`
++	SigDestinationImagePublisher     string   `mapstructure:"image_publisher"`
++	SigDestinationImageOffer         string   `mapstructure:"image_offer"`
++	SigDestinationImageSku           string   `mapstructure:"image_sku"`
++	SigDestinationImageStorageSku    string   `mapstructure:"image_storage_sku"`
+ }
+ 
+ type Config struct {
+@@ -1013,6 +1017,14 @@ func assertRequiredParametersSet(c *Config, errs *packersdk.MultiError) {
+ 		if c.SharedGalleryDestination.SigDestinationSubscription == "" {
+ 			c.SharedGalleryDestination.SigDestinationSubscription = c.ClientConfig.SubscriptionID
+ 		}
++		if c.SharedGalleryDestination.SigDestinationImagePublisher != "" {
++			if c.SharedGalleryDestination.SigDestinationImageOffer == "" {
++				errs = packersdk.MultiErrorAppend(errs, fmt.Errorf("An image_offer must be specified for shared_image_gallery_destination when image_publisher specified"))
++			}
++			if c.SharedGalleryDestination.SigDestinationImageSku == "" {
++				errs = packersdk.MultiErrorAppend(errs, fmt.Errorf("An image_sku must be specified for shared_image_gallery_destination when image_publisher specified"))
++			}
++		}
+ 	}
+ 	if c.SharedGalleryTimeout == 0 {
+ 		// default to a one-hour timeout. In the sdk, the default is 15 m.
+diff --git a/builder/azure/arm/step_publish_to_shared_image_gallery.go b/builder/azure/arm/step_publish_to_shared_image_gallery.go
+index 866ff203e..8bd0bc270 100644
+--- a/builder/azure/arm/step_publish_to_shared_image_gallery.go
++++ b/builder/azure/arm/step_publish_to_shared_image_gallery.go
+@@ -38,11 +38,13 @@ func NewStepPublishToSharedImageGallery(client *AzureClient, ui packersdk.Ui, co
+ }
+ 
+ func (s *StepPublishToSharedImageGallery) publishToSig(ctx context.Context, mdiID string, miSigPubRg string, miSIGalleryName string, miSGImageName string, miSGImageVersion string, miSigReplicationRegions []string, miSGImageVersionEndOfLifeDate string, miSGImageVersionExcludeFromLatest bool, miSigReplicaCount int32, location string, tags map[string]*string) (string, error) {
+-
+ 	replicationRegions := make([]compute.TargetRegion, len(miSigReplicationRegions))
+ 	for i, v := range miSigReplicationRegions {
+ 		regionName := v
+-		replicationRegions[i] = compute.TargetRegion{Name: &regionName}
++		replicationRegions[i] = compute.TargetRegion{
++			Name:               &regionName,
++			StorageAccountType: compute.StorageAccountType("Premium_LRS"),
++		}
+ 	}
+ 
+ 	var endOfLifeDate *date.Time
+@@ -130,6 +132,11 @@ func (s *StepPublishToSharedImageGallery) Run(ctx context.Context, stateBag mult
+ 	} else if miSigReplicaCount > 10 {
+ 		miSigReplicaCount = constants.SharedImageGalleryImageVersionDefaultMaxReplicaCount
+ 	}
++	/* 	storageSku := stateBag.Get(constants.ArmManagedImageSharedGalleryStorageSku).(string)
++	   	if storageSku == "" {
++	   		storageSku = "Standard_LRS"
++	   	} */
++	storageSku := "Premium_LRS"
+ 
+ 	s.say(fmt.Sprintf(" -> MDI ID used for SIG publish           : '%s'", mdiID))
+ 	s.say(fmt.Sprintf(" -> SIG publish resource group            : '%s'", miSigPubRg))
+@@ -140,6 +147,7 @@ func (s *StepPublishToSharedImageGallery) Run(ctx context.Context, stateBag mult
+ 	s.say(fmt.Sprintf(" -> SIG image version endoflife date      : '%s'", miSGImageVersionEndOfLifeDate))
+ 	s.say(fmt.Sprintf(" -> SIG image version exclude from latest : '%t'", miSGImageVersionExcludeFromLatest))
+ 	s.say(fmt.Sprintf(" -> SIG replica count [1, 10]             : '%d'", miSigReplicaCount))
++	s.say(fmt.Sprintf(" -> SIG image sku                         : '%s'", storageSku))
+ 
+ 	createdGalleryImageVersionID, err := s.publish(ctx, mdiID, miSigPubRg, miSIGalleryName, miSGImageName, miSGImageVersion, miSigReplicationRegions, miSGImageVersionEndOfLifeDate, miSGImageVersionExcludeFromLatest, miSigReplicaCount, location, tags)
+ 
